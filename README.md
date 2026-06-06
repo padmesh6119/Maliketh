@@ -138,6 +138,6 @@ make cli ARGS="list"
 
 <div align="center">
 
-Designed &amp; built solo by **Padmesh** · [@padmesh6119](https://github.com/padmesh6119) · pure vibe coding
+Designed &amp; built solo by **Padmesh** · [@padmesh6119](https://github.com/padmesh6119) 
 
 </div>
