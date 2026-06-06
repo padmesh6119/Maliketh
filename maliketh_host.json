@@ -1,9 +1,0 @@
-{
-  "name": "com.maliketh.host",
-  "description": "Maliketh native vault bridge",
-  "path": "/home/pontiff/.local/share/maliketh/maliketh-host",
-  "type": "stdio",
-  "allowed_origins": [
-    "chrome-extension://lngcofamgmoajpnabmgfplkpcdfhoijd/"
-  ]
-}
