@@ -1,0 +1,84 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        width: 300px;
+        margin: 0;
+        font: 13px/1.45 system-ui, sans-serif;
+        background: #15131c;
+        color: #eee;
+      }
+      header {
+        padding: 12px 14px;
+        border-bottom: 1px solid #2a2735;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      header .brand { font-weight: 700; color: #b5179e; letter-spacing: 0.3px; }
+      .status { font-size: 11px; color: #9a93a8; }
+      .status.locked { color: #f08c00; }
+      .status.unlocked { color: #51cf66; }
+      .section { padding: 10px 14px; }
+      .muted { color: #9a93a8; font-size: 12px; }
+      .row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 0;
+        border-bottom: 1px solid #221f2c;
+        gap: 8px;
+      }
+      .row:last-child { border-bottom: none; }
+      .row .title { font-weight: 600; }
+      .row .user { font-size: 11px; color: #9a93a8; }
+      button {
+        font: inherit;
+        background: #b5179e;
+        color: #fff;
+        border: none;
+        border-radius: 7px;
+        padding: 6px 10px;
+        cursor: pointer;
+      }
+      button.ghost { background: #241f30; color: #cfc8dc; }
+      header button.help { padding: 3px 9px; font-size: 11px; }
+      button:disabled { opacity: 0.5; cursor: default; }
+      .bar { display: flex; gap: 8px; padding: 10px 14px; border-top: 1px solid #2a2735; }
+      .bar button { flex: 1; }
+      .capture {
+        margin: 0 14px 10px;
+        padding: 10px;
+        background: #241f30;
+        border: 1px solid #b5179e;
+        border-radius: 8px;
+      }
+      .capture .acts { display: flex; gap: 8px; margin-top: 8px; }
+      .gen { display: flex; gap: 6px; margin-top: 6px; }
+      .gen input { flex: 1; background: #0f0d15; color: #eee; border: 1px solid #2a2735; border-radius: 6px; padding: 5px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <span class="brand">MALIKETH</span>
+      <span id="status" class="status">…</span>
+      <button id="help" class="ghost help" title="How to use Maliketh">How to use</button>
+    </header>
+    <div id="capture"></div>
+    <div id="body" class="section"></div>
+    <div class="bar">
+      <button id="gen" class="ghost">Generate</button>
+      <button id="lock" class="ghost">Lock</button>
+    </div>
+    <div id="genout" class="section" style="display:none">
+      <div class="gen">
+        <input id="genfield" readonly />
+        <button id="gencopy">Copy</button>
+      </div>
+    </div>
+    <script src="popup.js"></script>
+  </body>
+</html>

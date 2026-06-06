@@ -1,0 +1,30 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#E8C873"/>
+      <stop offset="0.5" stop-color="#C8A04B"/>
+      <stop offset="1" stop-color="#8A6B27"/>
+    </linearGradient>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#17171A"/>
+      <stop offset="1" stop-color="#0A0A0C"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="0" y="0" width="512" height="512" rx="112" fill="url(#tile)"/>
+  <rect x="6" y="6" width="500" height="500" rx="106" fill="none" stroke="#C8A04B" stroke-opacity="0.18" stroke-width="3"/>
+
+  <!-- Black Blade: single curved sweep -->
+  <path d="M 372 92
+           C 486 214, 430 372, 150 432
+           C 318 332, 336 224, 372 92 Z"
+        fill="url(#gold)"/>
+
+  <!-- spine highlight -->
+  <path d="M 372 96 C 350 210, 320 318, 168 420"
+        fill="none" stroke="#F4E4A6" stroke-opacity="0.55" stroke-width="6" stroke-linecap="round"/>
+
+  <!-- crossguard + grip -->
+  <path d="M 150 432 L 112 470" stroke="url(#gold)" stroke-width="22" stroke-linecap="round"/>
+  <path d="M 120 412 L 196 452" stroke="url(#gold)" stroke-width="16" stroke-linecap="round"/>
+</svg>

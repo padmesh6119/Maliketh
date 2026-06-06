@@ -1,0 +1,518 @@
+===============================================================================
+ MALIKETH — USER & OPERATOR MANUAL
+ A self-hosted credential vault with browser autofill
+ Version 0.1.0
+===============================================================================
+
+CONTENTS
+  1.  What Maliketh is
+  2.  How it works (architecture)
+  3.  Security model & honest caveats
+  4.  Requirements
+  5.  Installation
+  6.  First run (creating your vault)
+  7.  The desktop app (PySide6)
+  8.  The browser extension
+  9.  The command-line interface (CLI)
+  10. Generators (passwords & passphrases)
+  11. Two-factor (TOTP) codes
+  12. Vault health audit & breach check
+  13. Import & export (JSON / CSV)
+  14. Backups
+  15. Auto-lock, manual lock & failed-attempt backoff
+  16. Files, paths & environment variables
+  17. The agent daemon (lifecycle & control)
+  18. Troubleshooting
+  19. Uninstall / reset
+  20. Threat model — what it does and does NOT protect against
+  21. Developer notes & testing
+
+
+-------------------------------------------------------------------------------
+ 1. WHAT MALIKETH IS
+-------------------------------------------------------------------------------
+Maliketh stores your logins (username, password, URL, notes, TOTP secret, tags)
+in a single encrypted file on your own machine. It has three faces:
+
+  * A desktop app  — manage entries, reveal/copy secrets, generate passwords.
+  * A browser extension — detects logins and fills them on the right site.
+  * A CLI          — scriptable access for power users.
+
+There is no cloud, no account, no sync server. Your master password never
+leaves your computer, and the key derived from it lives only in RAM inside one
+local background process (the "agent").
+
+
+-------------------------------------------------------------------------------
+ 2. HOW IT WORKS (ARCHITECTURE)
+-------------------------------------------------------------------------------
+Four cooperating pieces, plus the encrypted file:
+
+        +--------------------+        unix socket (mode 0600, uid-checked)
+        |  Desktop app       |  <---------------------------------------+
+        |  ui/app.py         |  unlock / CRUD / generate / audit        |
+        +--------------------+                                          |
+                                                                        v
+ browser - extension - native messaging - core/native_host.py -> core/agent.py
+  page      (MV3)        (stdio frames)    (restricted, origin-   (HOLDS THE KEY
+  content   background                      scoped bridge)         in RAM; vault
+  popup                                                            logic; autolock)
+                                                                        |
+                                                                        v
+                                                          core/vault.py  -->  vault.mlkv
+                                                          (Argon2id + XChaCha20-Poly1305)
+
+  core/vault.py        Crypto and the on-disk vault format. Argon2id key
+                       derivation, XChaCha20-Poly1305 authenticated encryption,
+                       atomic 0600 writes, password generator, TOTP, history.
+  core/agent.py        The ONLY process that ever holds the decrypted key.
+                       Serves a local Unix-domain socket; auto-locks when idle.
+  core/native_host.py  The browser bridge. Exposes a RESTRICTED command set and
+                       scopes every match/fill to a browser-attested origin.
+  core/client.py       Socket client used by the app and CLI; auto-starts the
+                       agent on first use.
+  ui/app.py            The PySide6 desktop application.
+  extension/           The MV3 browser extension (background, content, popup).
+
+Why a separate agent? So the unlocked key lives in exactly one place. You can
+close and reopen the desktop app, or use the browser, without re-typing your
+master password each time — and locking is instant and global.
+
+
+-------------------------------------------------------------------------------
+ 3. SECURITY MODEL & HONEST CAVEATS
+-------------------------------------------------------------------------------
+Cryptography:
+  * Master password -> Argon2id (time=3, memory=64 MiB, parallelism=4) -> 32-byte
+    key. A random 16-byte salt is stored per vault.
+  * The vault is encrypted with XChaCha20-Poly1305 using a fresh random 24-byte
+    nonce on EVERY save. The KDF parameters, salt and nonce are bound into the
+    ciphertext as authenticated additional data (AAD), so any tampering with the
+    header is detected on unlock.
+  * Wrong password or a modified file fails authentication — you get a clear
+    "incorrect master password or corrupt vault" error, never garbage.
+
+Key handling:
+  * The key sits in a bytearray wrapped by core/secure.py, mlock()-ed (best
+    effort) to discourage swapping, and zeroed on lock.
+  * The master password NEVER travels through the browser extension or native
+    host. Unlocking is desktop/CLI only, by design, to keep the master secret
+    off the browser attack surface.
+  * Autofill is always user-initiated and scoped to an origin the BROWSER
+    attests (from the tab URL), not anything a web page can supply. The password
+    is fetched from the agent only at the moment of fill, and only for an entry
+    whose stored URL matches that origin.
+
+HONEST CAVEAT (read this):
+  "Key only in RAM" is best-effort in pure Python, NOT a hardware guarantee.
+  Python strings/bytes are immutable and the garbage collector copies them
+  freely, so Argon2 output and decrypted plaintext can leave residual copies in
+  memory or swap that cannot be reliably wiped. mlock and zeroing reduce, but do
+  not eliminate, this. For a hardware-grade guarantee you need a C/Rust core
+  with secure memory (that is on the roadmap). Treat Maliketh as a strong
+  personal/learning manager, not an audited drop-in for high-assurance use.
+
+
+-------------------------------------------------------------------------------
+ 4. REQUIREMENTS
+-------------------------------------------------------------------------------
+  * Linux (developed/tested on Linux; the socket uid check is Linux-specific).
+  * Python 3.10+ (tested on 3.12).
+  * Python packages (see requirements.txt):
+        argon2-cffi   (Argon2id KDF)
+        PyNaCl        (XChaCha20-Poly1305)
+        PySide6       (desktop GUI)
+  * A Chromium-family browser (Chrome, Chromium, Brave, Edge, Vivaldi) for the
+    extension. Firefox is partially supported by the installer but the extension
+    is packaged for MV3/Chromium.
+  * Node is NOT required to run; it is only used in development to lint JS.
+
+
+-------------------------------------------------------------------------------
+ 5. INSTALLATION
+-------------------------------------------------------------------------------
+Option A — one shot:
+    ./setup.sh
+
+Option B — manual:
+    python3 -m venv --system-site-packages .venv
+    .venv/bin/pip install -r requirements.txt
+
+Then register the browser bridge:
+    1. Open your browser at chrome://extensions
+    2. Enable "Developer mode"
+    3. Click "Load unpacked" and select the  extension/  folder
+    4. Copy the generated Extension ID
+    5. Run:
+         .venv/bin/python install.py --extension-id <THE_EXTENSION_ID>
+
+       This writes a launcher to ~/.local/share/maliketh/maliketh-host and a
+       native-messaging manifest into each detected browser's config dir.
+       (Optional: --only chromium brave   to limit which browsers; --firefox-id
+       <id> to also register a Firefox add-on id.)
+
+NOTE: Unpacked extensions get a NEW random ID if removed and re-added. If the ID
+changes, re-run install.py with the new ID.
+
+
+-------------------------------------------------------------------------------
+ 6. FIRST RUN (CREATING YOUR VAULT)
+-------------------------------------------------------------------------------
+Launch the desktop app:
+    .venv/bin/python ui/app.py          (or:  make run)
+
+On first launch there is no vault, so you are prompted to CREATE one: choose a
+strong master password and confirm it. This password is the only thing that can
+decrypt your vault — there is no recovery. The vault file is created at
+~/.local/share/maliketh/vault.mlkv and the agent starts automatically.
+
+You can also create the vault from the CLI:
+    .venv/bin/python -m core.cli init
+
+
+-------------------------------------------------------------------------------
+ 7. THE DESKTOP APP (PySide6)
+-------------------------------------------------------------------------------
+Toolbar:
+    Add       Create a new entry.
+    Generate  Open the password/passphrase generator.
+    Audit     Open the vault-health report (weak/reused, optional breach check).
+    Settings  Auto-lock timeout, change master password, import/export.
+    Lock      Lock the vault immediately (returns to the unlock prompt).
+
+Search bar: type to filter the entry list by title or username.
+
+Entry list (left): click an entry to view it.
+
+Detail pane (right):
+    Title, Username (with Copy), Password (eye toggle to reveal, Copy), URL
+    (clickable), TOTP code with seconds remaining, Notes.
+    Buttons:  Edit   History   Delete
+      - Edit:    change any field (eye + gear to reveal/generate the password).
+      - History: view previous passwords for this entry, with timestamps.
+      - Delete:  remove the entry (asks for confirmation).
+
+Clipboard safety: anything you Copy is automatically cleared from the clipboard
+after 20 seconds (only if it hasn't been overwritten meanwhile).
+
+Adding/editing an entry, fields:
+    Title, Username, Password, URL, TOTP secret, Tags (comma-separated), Notes.
+    * The URL is what autofill matches against — set it to the login page or the
+      site root, e.g. https://github.com
+    * The TOTP secret may be a raw base32 secret OR a full otpauth:// URI pasted
+      straight from a "set up authenticator" page; the secret is extracted
+      automatically.
+
+
+-------------------------------------------------------------------------------
+ 8. THE BROWSER EXTENSION
+-------------------------------------------------------------------------------
+Prerequisite: the vault must be UNLOCKED (open the desktop app and unlock; the
+extension cannot unlock — that is deliberate).
+
+Autofill:
+    Focus the username or password field on a login form. If Maliketh has any
+    entries whose URL matches the current site, a small "Maliketh" picker
+    appears beneath the field. Click an entry to fill the username and password.
+    Filling only ever happens on your click — never silently.
+
+Save a new login:
+    Submit a login form (or press Enter / click a login button). Maliketh
+    notices the submitted username+password and shows a "+" badge on the toolbar
+    icon. Open the popup and click "Save" to store it (or "Dismiss"). If an entry
+    for that site+username already exists, its password is updated and the old
+    one is kept in history.
+
+The popup (toolbar icon) shows:
+    * Vault status (unlocked / locked / no vault / agent offline).
+    * A pending "Save this login?" prompt, if any.
+    * The list of saved logins matching the current tab, each with a Fill button.
+    * Generate (copies a fresh password to the clipboard).
+    * Lock (locks the whole vault).
+
+Security notes specific to the extension:
+    * The origin used for matching/filling comes from the browser's tab URL, not
+      from the page's JavaScript, so a malicious page cannot trick Maliketh into
+      revealing another site's credentials.
+    * The browser can only ask the agent for: status, match (by origin), fill
+      (origin re-checked), capture (save), generate, lock. It can NEVER dump the
+      whole vault, fetch arbitrary entries, unlock, or change the master
+      password.
+
+
+-------------------------------------------------------------------------------
+ 9. THE COMMAND-LINE INTERFACE (CLI)
+-------------------------------------------------------------------------------
+Invoke as:   .venv/bin/python -m core.cli <command> [options]
+(Tip: alias it, e.g.  alias mlk='.venv/bin/python -m core.cli')
+
+Commands:
+    status                 Show locked/unlocked, whether a vault exists, timeout.
+    init                   Create a new vault (prompts for password twice).
+    unlock                 Unlock the vault (prompts for the master password).
+    lock                   Lock the vault.
+    list [-q QUERY]        List entries (id, title, username). -q filters.
+    get <id> [--show] [--field F]
+                           Show an entry. Password is masked unless --show.
+                           --field prints just one field (e.g. --field password).
+    add [--title ..] [--username ..] [--url ..] [--totp ..]
+        [--password .. | --generate LEN]
+                           Add an entry. With --generate LEN a password is made
+                           for you; with neither, you are prompted (blank = auto).
+    rm <id>                Delete an entry.
+    gen [-n N] [--passphrase]
+                           Print a generated secret. Default N=20 chars, or 6
+                           words with --passphrase. Works even while locked.
+    audit [--breach]       Print a health report. --breach also checks Have I
+                           Been Pwned (sends only a SHA-1 prefix; see section 12).
+    import-csv <file>      Import a Chrome/Bitwarden CSV export.
+
+Global option:
+    --json                 Emit raw JSON (great for scripting). Place it before
+                           the subcommand, e.g.  cli --json list
+
+The <id> accepted by get/rm is the full entry id shown by `list` (the short
+8-char prefix in the human listing is just for display — copy the full id with
+`cli --json list`).
+
+Examples:
+    cli add --title GitHub --username neo --url https://github.com --generate 24
+    cli get 67ef0711ae53... --field password --show
+    cli --json list | jq '.[].title'
+    cli audit --breach
+
+
+-------------------------------------------------------------------------------
+ 10. GENERATORS (PASSWORDS & PASSPHRASES)
+-------------------------------------------------------------------------------
+Password mode (default): choose length and which character classes to include
+(lower, upper, digits, symbols) and whether to avoid ambiguous characters
+(O/0/l/1/etc.). At least one character of each selected class is guaranteed.
+
+Passphrase mode: produces word-based secrets like
+    Scatter-Pechora-Xerxes-Noon-Crayolas-44
+Words are drawn from the system dictionary (/usr/share/dict/words) when present,
+otherwise from a built-in fallback list. The "length" value means NUMBER OF
+WORDS in this mode (clamped 3–12). A trailing number is appended by default.
+
+In the desktop app: Generate -> tick "passphrase" to switch modes.
+In the CLI:         cli gen --passphrase [-n WORDS]
+
+
+-------------------------------------------------------------------------------
+ 11. TWO-FACTOR (TOTP) CODES
+-------------------------------------------------------------------------------
+Maliketh can store a TOTP secret per entry and show the live 6-digit code.
+  * Add it in the entry's "TOTP secret" field — either a base32 secret
+    (e.g. JBSWY3DPEHPK3PXP) or a full otpauth:// URI.
+  * The desktop detail pane shows the current code and the seconds remaining;
+    it refreshes automatically.
+  * During autofill, if an entry has TOTP, the code is also returned to the
+    browser so it can be used to fill a 2FA field.
+Implementation is standard RFC 6238 (SHA-1, 30-second period, 6 digits).
+
+
+-------------------------------------------------------------------------------
+ 12. VAULT HEALTH AUDIT & BREACH CHECK
+-------------------------------------------------------------------------------
+The audit examines every entry and flags:
+    WEAK    — low strength score (short and/or few character classes).
+    REUSED  — the same password is used by more than one entry.
+    PWNED   — (only with the online check) the password appears in known breach
+              corpora, with the number of times seen.
+
+Run it from the desktop (Audit button) or CLI (`cli audit`). Strength is scored
+locally; reuse is detected locally. Nothing leaves your machine unless you opt
+in to the breach check.
+
+Online breach check (opt-in):
+    Uses the Have I Been Pwned "range" API with k-anonymity: Maliketh computes
+    SHA-1 of the password and sends ONLY the first 5 hex characters of that hash
+    over HTTPS. The server returns all hash suffixes in that bucket and Maliketh
+    matches locally. The password — and its full hash — never leave your machine.
+    Trigger it with the button in the Audit dialog or `cli audit --breach`.
+
+
+-------------------------------------------------------------------------------
+ 13. IMPORT & EXPORT (JSON / CSV)
+-------------------------------------------------------------------------------
+Export (desktop Settings -> "Export vault (plaintext)…"):
+    Writes ALL entries, including passwords, as PLAINTEXT JSON to a file you
+    choose (created with 0600 permissions). This is for backup/migration — store
+    it somewhere safe or delete it after use. You are warned before it runs.
+
+Import JSON (Settings -> "Import entries (JSON)…"):
+    Reads a JSON file shaped like the export ({"entries":[...]}) or a bare list.
+
+Import CSV (Settings -> "Import CSV…", or `cli import-csv FILE`):
+    Understands common exports (Chrome: name,url,username,password; Bitwarden:
+    login_uri/login_username/login_password, etc.). Columns are matched by
+    header keywords, so most managers' CSVs import cleanly.
+
+Imported entries are MERGED into the current vault (they do not replace it).
+
+
+-------------------------------------------------------------------------------
+ 14. BACKUPS
+-------------------------------------------------------------------------------
+Every time the vault is saved, the previous encrypted file is copied into
+    ~/.local/share/maliketh/backups/
+as  vault-YYYYMMDD-HHMMSS-xxxx.mlkv  (the 5 most recent are kept; older ones are
+pruned). These backups are the SAME encrypted format and open with the SAME
+master password. To restore one, lock the vault, copy a backup over
+vault.mlkv, and unlock again.
+
+
+-------------------------------------------------------------------------------
+ 15. AUTO-LOCK, MANUAL LOCK & FAILED-ATTEMPT BACKOFF
+-------------------------------------------------------------------------------
+Auto-lock:  the agent wipes the key after a period of inactivity (default 10
+            minutes). Change it in desktop Settings ("Auto-lock after idle";
+            0 = never). The setting persists in config.json.
+Manual lock: the "Lock" button (desktop or popup) or `cli lock` wipes the key
+            immediately, everywhere.
+Backoff:    after 5 wrong unlock attempts the agent imposes a growing cooldown
+            (doubling, capped at 60 s) before it will try again, to slow down
+            guessing. A correct unlock resets the counter.
+
+
+-------------------------------------------------------------------------------
+ 16. FILES, PATHS & ENVIRONMENT VARIABLES
+-------------------------------------------------------------------------------
+Default data home:  ~/.local/share/maliketh/
+    vault.mlkv          the encrypted vault
+    backups/            rotating encrypted backups (latest 5)
+    config.json         non-secret settings (auto-lock timeout)
+    agent.log           agent log
+    native_host.log     browser bridge log
+    maliketh-host       the launcher script install.py creates
+
+Runtime socket:     $XDG_RUNTIME_DIR/maliketh-agent.sock  (falls back to the
+                    data home). Mode 0600, only your uid may connect.
+
+Environment overrides:
+    MALIKETH_HOME      change the data directory
+    MALIKETH_VAULT     point at a specific vault file
+    MALIKETH_SOCKET    change the agent socket path
+
+Native-messaging manifests (written by install.py) live under each browser's
+config, e.g. ~/.config/google-chrome/NativeMessagingHosts/com.maliketh.host.json
+
+
+-------------------------------------------------------------------------------
+ 17. THE AGENT DAEMON (LIFECYCLE & CONTROL)
+-------------------------------------------------------------------------------
+The agent is started automatically the first time the app, CLI, or browser
+bridge needs it (spawned detached, logging to agent.log). It keeps running in
+the background holding the unlocked key until you lock it or it auto-locks; the
+KEY is gone on lock but the PROCESS stays up, ready to unlock again.
+
+Start it manually:        .venv/bin/python -m core.agent     (or: make agent)
+Check it from the CLI:    .venv/bin/python -m core.cli status
+Stop the process:         pkill -f "[c]ore.agent"
+    (Use the [c] bracket trick; a plain `pkill -f core.agent` matches the very
+     shell you type it in and kills that instead.)
+
+Only one agent runs at a time; a second one detects the live socket and exits.
+
+
+-------------------------------------------------------------------------------
+ 18. TROUBLESHOOTING
+-------------------------------------------------------------------------------
+"agent offline" in the popup / CLI errors about the socket:
+    The desktop app/CLI auto-start the agent, but the browser bridge needs the
+    agent reachable. Open the desktop app once, or run `cli status`. Check
+    agent.log.
+
+Extension can't reach the host ("Specified native messaging host not found" or
+"native host has exited"):
+    * Did you run install.py with the CURRENT extension ID? Re-check the ID at
+      chrome://extensions and re-run install.py.
+    * Confirm ~/.local/share/maliketh/maliketh-host exists and is executable.
+    * Check native_host.log for errors.
+    * Make sure the browser was fully restarted after registering the host.
+
+"incorrect master password or corrupt vault":
+    Either the password is wrong, or the file was modified/corrupted. Try a
+    backup from backups/.
+
+Autofill picker doesn't appear:
+    * Is the vault unlocked? (Unlock in the desktop app.)
+    * Does an entry's URL match the site? Edit the entry's URL to the site root.
+    * The content script runs on the top frame only; logins inside iframes are
+      intentionally not auto-handled.
+
+Passphrase words look unusual:
+    They come from your system dictionary; that's expected and fine.
+
+PySide6 / Qt won't start on a headless box:
+    The desktop app needs a display. For headless use, use the CLI instead.
+
+
+-------------------------------------------------------------------------------
+ 19. UNINSTALL / RESET
+-------------------------------------------------------------------------------
+Stop the agent:        pkill -f "[c]ore.agent"
+Remove host manifests: delete com.maliketh.host.json from each browser's
+                       NativeMessagingHosts directory (see section 16).
+Remove the extension:  chrome://extensions -> Remove.
+Delete all data:       rm -rf ~/.local/share/maliketh     (this destroys your
+                       vault and backups — be sure).
+Remove the code/venv:  delete this project folder and its .venv.
+
+
+-------------------------------------------------------------------------------
+ 20. THREAT MODEL — WHAT IT DOES AND DOES NOT PROTECT AGAINST
+-------------------------------------------------------------------------------
+Protects against:
+    * Theft of the vault file at rest (it is encrypted; without the master
+      password it is useless; tampering is detected).
+    * A malicious web page trying to read another site's credentials (origin is
+      browser-attested; autofill is user-initiated and origin-scoped).
+    * The browser/extension being a weak point for your master secret (the
+      master password never goes through them).
+    * Other local users on a shared machine reading the agent socket (0600 +
+      uid check).
+
+Does NOT protect against:
+    * Malware running as YOUR user while the vault is unlocked — it can read the
+      socket and ask the agent for secrets, scrape RAM, or key-log your master
+      password. No userland manager can fully prevent this.
+    * A forgotten master password — there is no recovery.
+    * Cold-boot / swap forensics of the key (pure-Python memory caveat, sec. 3).
+    * Phishing where you manually type a password into a look-alike site
+      (autofill won't fill it, but you still can).
+
+
+-------------------------------------------------------------------------------
+ 21. DEVELOPER NOTES & TESTING
+-------------------------------------------------------------------------------
+Layout:
+    core/   vault, agent, native_host, client, secure, protocol, audit,
+            importers, cli
+    ui/     app.py (PySide6)
+    extension/  manifest.json, background.js, content.js, popup.html, popup.js
+    tests/  test_vault.py (unittest)
+    install.py, setup.sh, Makefile, requirements.txt
+
+Run the tests:
+    make test            (or: .venv/bin/python -m unittest discover -s tests -v)
+Compile-check:
+    make lint
+Run the app / agent / CLI:
+    make run / make agent / make cli ARGS="status"
+
+For isolated manual testing, point everything at a scratch dir:
+    export MALIKETH_HOME=$(mktemp -d) XDG_RUNTIME_DIR=$MALIKETH_HOME PYTHONPATH=.
+
+IPC contract (socket, length-prefixed JSON): methods include status, init,
+unlock, lock, list, get, add, update, delete, match, fill, capture, totp,
+generate, change_password, export, import, set_timeout, ping. The native host
+exposes only a safe subset of these to the browser.
+
+Roadmap: per-entry encryption, a fixed extension key for a stable ID, Firefox
+packaging, and a Rust core for hardened key memory.
+
+===============================================================================
+ End of manual.
+===============================================================================
